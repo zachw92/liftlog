@@ -545,10 +545,10 @@ export const GUARD_RAILS: GuardRail[] = [
 // ---------------------------------------------------------------------------
 
 export const MAIN_LIFTS: MainLift[] = [
-  { id: 'ohp', enteredMax: 120, tm: 108, increment: 5 },
-  { id: 'bench', enteredMax: 215, tm: 193.5, increment: 5 },
-  { id: 'squat', enteredMax: 265, tm: 238.5, increment: 10 },
-  { id: 'deadlift', enteredMax: 345, tm: 310.5, increment: 10 },
+  { id: 'ohp', enteredMax: 120, tm: 108, increment: 5, missStreak: 0 },
+  { id: 'bench', enteredMax: 215, tm: 193.5, increment: 5, missStreak: 0 },
+  { id: 'squat', enteredMax: 265, tm: 238.5, increment: 10, missStreak: 0 },
+  { id: 'deadlift', enteredMax: 345, tm: 310.5, increment: 10, missStreak: 0 },
 ];
 
 // ---------------------------------------------------------------------------

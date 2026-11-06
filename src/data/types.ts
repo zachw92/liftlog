@@ -68,6 +68,7 @@ export interface MainLift {
   enteredMax: number;
   tm: number; // unrounded
   increment: number;
+  missStreak: number; // consecutive cycles ending in a miss/hold
 }
 
 export interface CycleState {

@@ -1,5 +1,9 @@
 import { db, type LiftLogDb } from './db';
-import { seedDb, MAIN_LIFTS as SEED_MAIN_LIFTS } from './seed';
+import {
+  seedDb,
+  MAIN_LIFTS as SEED_MAIN_LIFTS,
+  EXERCISE_STATES as SEED_EXERCISE_STATES,
+} from './seed';
 import { HISTORICAL_SESSION_ID } from './types';
 import { nowIso, type Clock, systemClock } from './clock';
 import type {
@@ -17,8 +21,18 @@ import type {
   Settings,
   Side,
 } from './types';
-import { planMainLift, type Week } from '../engine/fiveThreeOne';
-import { nextAccessoryState, type AccessoryContext } from '../engine/accessory';
+import {
+  planMainLift,
+  assessCycle,
+  type Week,
+  type CycleReps,
+  type AssessCycleResult,
+} from '../engine/fiveThreeOne';
+import {
+  nextAccessoryState,
+  type AccessoryContext,
+  type AccessoryState,
+} from '../engine/accessory';
 import { e1rm } from '../engine/e1rm';
 
 // Translate the MainLiftId → main-lift exerciseId used across the seed.
@@ -679,6 +693,232 @@ export async function updateMainLiftTm(
   const existing = await database.mainLifts.get(id);
   if (!existing) throw new Error(`Main lift ${id} not found`);
   await database.mainLifts.put({ ...existing, tm });
+}
+
+// ---------------------------------------------------------------------------
+// Edit a finished session: recompute states for each affected plan item by
+// replaying the accessory engine forward from the baseline through every
+// finished session in order.
+// ---------------------------------------------------------------------------
+
+export async function editFinishedSession(
+  sessionId: string,
+  clock: Clock = systemClock,
+  database: LiftLogDb = db,
+): Promise<void> {
+  const session = await database.sessions.get(sessionId);
+  if (!session) throw new Error(`Session ${sessionId} not found`);
+  if (session.status !== 'finished') {
+    throw new Error('editFinishedSession requires a finished session');
+  }
+  const logs = await database.setLogs.where('sessionId').equals(sessionId).toArray();
+  const affectedItems = new Set(logs.map((l) => l.planItemId));
+  for (const planItemId of affectedItems) {
+    await recomputeExerciseState(planItemId, clock, database);
+  }
+}
+
+async function recomputeExerciseState(
+  planItemId: string,
+  clock: Clock,
+  database: LiftLogDb,
+): Promise<void> {
+  const planItem = await database.planItems.get(planItemId);
+  if (!planItem) return;
+  const exercise = await database.exercises.get(planItem.exerciseId);
+  if (!exercise) return;
+
+  const [allSessions, allLogs, allFeels] = await Promise.all([
+    database.sessions.where('status').equals('finished').toArray(),
+    database.setLogs.where('planItemId').equals(planItemId).toArray(),
+    database.exerciseFeels.where('planItemId').equals(planItemId).toArray(),
+  ]);
+  const ordered = allSessions
+    .filter((s) => s.id !== HISTORICAL_SESSION_ID)
+    .sort((a, b) => (a.finishedAt ?? '').localeCompare(b.finishedAt ?? ''));
+
+  const logsBySession = new Map<string, typeof allLogs>();
+  for (const l of allLogs) {
+    const arr = logsBySession.get(l.sessionId) ?? [];
+    arr.push(l);
+    logsBySession.set(l.sessionId, arr);
+  }
+  const feelBySession = new Map(allFeels.map((f) => [f.sessionId, f.feel]));
+
+  const baseline = SEED_EXERCISE_STATES.find((s) => s.planItemId === planItemId);
+  let state: AccessoryState | null = baseline
+    ? { weight: baseline.weight, target: baseline.target, badStreak: baseline.badStreak }
+    : null;
+
+  for (const session of ordered) {
+    const sessionLogs = (logsBySession.get(session.id) ?? []).filter(
+      (l) =>
+        !l.isWarmup &&
+        (!planItem.unilateral || l.side === planItem.leadSide),
+    );
+    if (sessionLogs.length === 0) continue;
+    const ctx: AccessoryContext = {
+      isDeload: session.week === 4,
+      unit: planItem.unit,
+      mode: planItem.mode,
+      step: planItem.step,
+      repMin: planItem.repMin,
+      repMax: planItem.repMax,
+      isBodyweight: exercise.equipment === 'bodyweight',
+    };
+    state = nextAccessoryState(
+      state,
+      sessionLogs.map((l) => ({ weight: l.weight, reps: l.reps })),
+      feelBySession.get(session.id) ?? 'fine',
+      ctx,
+    );
+  }
+
+  if (state) {
+    await database.exerciseStates.put({
+      planItemId,
+      weight: state.weight,
+      target: state.target,
+      badStreak: state.badStreak,
+      updatedAt: nowIso(clock),
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cycle complete
+// ---------------------------------------------------------------------------
+
+export interface CycleCompleteLift {
+  liftId: MainLiftId;
+  liftName: string;
+  currentTm: number;
+  increment: number;
+  reps: Partial<CycleReps>;
+  assessment: AssessCycleResult | null;
+  priorMissStreak: number;
+}
+
+const LIFT_LABEL: Record<MainLiftId, string> = {
+  ohp: 'Press (OHP)',
+  bench: 'Bench',
+  squat: 'Squat',
+  deadlift: 'Deadlift',
+};
+
+export async function getCycleCompleteData(
+  database: LiftLogDb = db,
+): Promise<CycleCompleteLift[]> {
+  const [cs, mainLifts, planDays, allSessions, meta] = await Promise.all([
+    database.cycleState.get('singleton'),
+    database.mainLifts.toArray(),
+    database.planDays.toArray(),
+    database.sessions.where('status').equals('finished').toArray(),
+    database.meta.get('singleton'),
+  ]);
+  if (!cs || !meta) throw new Error('getCycleCompleteData before setup');
+
+  const sessionsInCycle = allSessions.filter((s) => s.cycle === cs.cycle);
+  const sessionIds = sessionsInCycle.map((s) => s.id);
+  const plusLogs = (
+    await Promise.all(
+      sessionIds.map((sid) =>
+        database.setLogs
+          .where('sessionId')
+          .equals(sid)
+          .and((l) => l.isPlusSet && !l.isWarmup)
+          .toArray(),
+      ),
+    )
+  ).flat();
+
+  const result: CycleCompleteLift[] = [];
+  for (const main of mainLifts) {
+    const planDay = planDays.find((d) => d.mainLiftId === main.id);
+    if (!planDay) continue;
+    const exerciseId = MAIN_LIFT_EXERCISE_ID[main.id];
+
+    const reps: Partial<CycleReps> = {};
+    for (const week of [1, 2, 3] as const) {
+      const session = sessionsInCycle.find(
+        (s) => s.planDayId === planDay.id && s.week === week,
+      );
+      if (!session) continue;
+      const log = plusLogs.find(
+        (l) => l.sessionId === session.id && l.exerciseId === exerciseId,
+      );
+      if (log) reps[`week${week}`] = log.reps;
+    }
+
+    const complete =
+      reps.week1 !== undefined && reps.week2 !== undefined && reps.week3 !== undefined;
+    const assessment: AssessCycleResult | null = complete
+      ? assessCycle({
+          tm: main.tm,
+          increment: main.increment,
+          reps: reps as CycleReps,
+          threshold: meta.settings.progressThreshold,
+          priorMissStreak: main.missStreak,
+        })
+      : null;
+
+    result.push({
+      liftId: main.id,
+      liftName: LIFT_LABEL[main.id],
+      currentTm: main.tm,
+      increment: main.increment,
+      reps,
+      assessment,
+      priorMissStreak: main.missStreak,
+    });
+  }
+  return result;
+}
+
+export interface CycleConfirmChoice {
+  liftId: MainLiftId;
+  newTm: number;
+  missStreak: number;
+}
+
+export async function confirmCycle(
+  choices: readonly CycleConfirmChoice[],
+  clock: Clock = systemClock,
+  database: LiftLogDb = db,
+): Promise<void> {
+  const cs = await database.cycleState.get('singleton');
+  if (!cs) throw new Error('confirmCycle before setup');
+  await database.transaction(
+    'rw',
+    [database.mainLifts, database.cycleState],
+    async () => {
+      const nextCycle = cs.cycle + 1;
+      const changedAt = nowIso(clock);
+      const tmHistory = [...cs.tmHistory];
+      for (const c of choices) {
+        const existing = await database.mainLifts.get(c.liftId);
+        if (!existing) continue;
+        await database.mainLifts.put({
+          ...existing,
+          tm: c.newTm,
+          missStreak: c.missStreak,
+        });
+        tmHistory.push({
+          cycle: nextCycle,
+          liftId: c.liftId,
+          tm: c.newTm,
+          changedAt,
+        });
+      }
+      await database.cycleState.put({
+        id: 'singleton',
+        cycle: nextCycle,
+        week: 1,
+        daysDone: [],
+        tmHistory,
+      });
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------

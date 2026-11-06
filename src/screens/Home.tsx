@@ -119,9 +119,18 @@ export function HomeScreen({ navigate }: Props) {
       ) : null}
 
       {home.cycleComplete ? (
-        <Banner tone="info">
-          Cycle complete — review TMs in Settings and start Cycle {home.cycle + 1}.
-        </Banner>
+        <button
+          type="button"
+          onClick={() => navigate({ kind: 'cycle-complete' })}
+          className="block w-full text-left"
+        >
+          <Banner tone="info">
+            <div className="flex items-center justify-between">
+              <span>Cycle complete — review TMs</span>
+              <span className="text-accent">→</span>
+            </div>
+          </Banner>
+        </button>
       ) : null}
 
       <section className="space-y-2">

@@ -6,6 +6,7 @@ import { HomeScreen } from './screens/Home';
 import { SessionScreen } from './screens/Session';
 import { HistoryScreen } from './screens/History';
 import { SettingsScreen } from './screens/Settings';
+import { CycleCompleteScreen } from './screens/CycleComplete';
 import { usePwaUpdate } from './pwa';
 import { Banner } from './components/Banner';
 
@@ -81,5 +82,7 @@ function RouteBody({ route, navigate, onSetupDone }: BodyProps) {
       return <HistoryScreen navigate={navigate} />;
     case 'settings':
       return <SettingsScreen navigate={navigate} />;
+    case 'cycle-complete':
+      return <CycleCompleteScreen navigate={navigate} />;
   }
 }

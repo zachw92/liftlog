@@ -5,7 +5,8 @@ export type Route =
   | { kind: 'home' }
   | { kind: 'session'; id: string }
   | { kind: 'history' }
-  | { kind: 'settings' };
+  | { kind: 'settings' }
+  | { kind: 'cycle-complete' };
 
 export function parseHash(hash: string): Route {
   const trimmed = hash.replace(/^#\/?/, '');
@@ -13,6 +14,7 @@ export function parseHash(hash: string): Route {
   if (trimmed === 'setup') return { kind: 'setup' };
   if (trimmed === 'history') return { kind: 'history' };
   if (trimmed === 'settings') return { kind: 'settings' };
+  if (trimmed === 'cycle-complete') return { kind: 'cycle-complete' };
   const m = trimmed.match(/^session\/(.+)$/);
   if (m) return { kind: 'session', id: decodeURIComponent(m[1]!) };
   return { kind: 'home' };
@@ -30,6 +32,8 @@ export function toHash(route: Route): string {
       return '#settings';
     case 'session':
       return `#session/${encodeURIComponent(route.id)}`;
+    case 'cycle-complete':
+      return '#cycle-complete';
   }
 }
 

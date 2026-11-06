@@ -11,8 +11,12 @@ import {
   finishSession,
   listSessions,
   undoLastSet,
+  editFinishedSession,
+  getCycleCompleteData,
+  confirmCycle,
 } from './repo';
 import type { Clock } from './clock';
+import type { Week } from '../engine/fiveThreeOne';
 
 const FIXED_DATE = new Date('2026-11-06T12:00:00.000Z');
 const fixedClock: Clock = () => FIXED_DATE;
@@ -269,5 +273,138 @@ describe('finishSession — next targets match the Rules section', () => {
     const sessions = await listSessions(d);
     expect(sessions[0]?.id).toBe(s.id);
     expect(sessions[0]?.status).toBe('finished');
+  });
+});
+
+describe('editFinishedSession — replays accessory engine forward', () => {
+  async function runBenchDay(
+    d: Awaited<ReturnType<typeof freshDb>>,
+    feel: 'bad' | 'fine' | 'great',
+    offsetMs: number,
+  ) {
+    const clock: Clock = () => new Date(FIXED_DATE.getTime() + offsetMs);
+    const s = await startSession('day-bench', clock, d);
+    const view = await loadSession(s.id, d);
+    // Just log the row planItem (seated-cable-row) which has a seeded state.
+    const item = view.block.items.find((i) => i.planItem.id === 'pi-bench-row')!;
+    for (const row of item.rows) {
+      await logSet(
+        {
+          sessionId: s.id,
+          planItemId: item.planItem.id,
+          exerciseId: item.exercise.id,
+          setIndex: row.setIndex,
+          weight: row.weight,
+          reps: row.reps,
+          target: row.reps,
+          isWarmup: false,
+          isPlusSet: false,
+          clock,
+        },
+        d,
+      );
+    }
+    await setFeel(s.id, item.planItem.id, feel, d);
+    return finishSession(s.id, clock, d);
+  }
+
+  it('re-running the chain reproduces the latest state even after a mid-chain edit', async () => {
+    const d = freshDb();
+    await completeSetup({ week: 1, daysDoneIds: [], database: d });
+    // Baseline: pi-bench-row is 120 × 10.
+    // Run three sessions: Fine (→11), Fine (→12), Great (→15 capped).
+    const s1 = await runBenchDay(d, 'fine', 0);
+    await d.cycleState.update('singleton', { daysDone: [] });
+    const s2 = await runBenchDay(d, 'fine', 1000);
+    await d.cycleState.update('singleton', { daysDone: [] });
+    const s3 = await runBenchDay(d, 'great', 2000);
+
+    expect(s1.nextTargets.find((t) => t.planItemId === 'pi-bench-row')?.after.target).toBe(
+      11,
+    );
+    expect(s3.nextTargets.find((t) => t.planItemId === 'pi-bench-row')?.after.target).toBe(
+      15,
+    );
+
+    // Now edit session 2's feel from fine → bad (simulating the user realised
+    // they tanked). editFinishedSession should replay the chain: 120×10 Fine →
+    // 11; 11 Bad → streak 1; 12 → capped Great still only moves to 15 but
+    // streak resets. Let's keep it simple: change feel to 'bad' on session 2.
+    await setFeel(s2.session.id, 'pi-bench-row', 'bad', d);
+    await editFinishedSession(s2.session.id, fixedClock, d);
+
+    // After replay with second session = Bad (not success, streak 1), target
+    // stays at 11 for session 2. Then session 3 Great succeeds → target 14.
+    const state = await d.exerciseStates.get('pi-bench-row');
+    expect(state?.target).toBe(14);
+    expect(state?.badStreak).toBe(0);
+  });
+});
+
+describe('getCycleCompleteData + confirmCycle', () => {
+  async function completeWeek(
+    d: Awaited<ReturnType<typeof freshDb>>,
+    week: Week,
+    plusReps: number,
+    offsetMs: number,
+  ) {
+    const clock: Clock = () => new Date(FIXED_DATE.getTime() + offsetMs);
+    await d.cycleState.update('singleton', { week, daysDone: [] });
+    const s = await startSession('day-bench', clock, d);
+    const view = await loadSession(s.id, d);
+    const main = view.block.mainLift!;
+    // Log only the work sets. The + set reps vary by scenario.
+    const workRows = main.rows.filter((r) => r.kind === 'work');
+    for (const row of workRows) {
+      await logSet(
+        {
+          sessionId: s.id,
+          planItemId: null,
+          exerciseId: main.exercise.id,
+          setIndex: row.setIndex,
+          weight: row.weight,
+          reps: row.isPlusSet ? plusReps : row.reps,
+          target: row.reps,
+          isWarmup: false,
+          isPlusSet: row.isPlusSet,
+          clock,
+        },
+        d,
+      );
+    }
+    await finishSession(s.id, clock, d);
+  }
+
+  it('assembles + set reps per week and returns an increment suggestion when all minimums hit', async () => {
+    const d = freshDb();
+    await completeSetup({ week: 1, daysDoneIds: [], database: d });
+    await completeWeek(d, 1, 5, 0); // 5+ → 5
+    await completeWeek(d, 2, 3, 1000); // 3+ → 3
+    await completeWeek(d, 3, 3, 2000); // 1+ → 3 (threshold = 3)
+    const data = await getCycleCompleteData(d);
+    const bench = data.find((x) => x.liftId === 'bench')!;
+    expect(bench.reps).toEqual({ week1: 5, week2: 3, week3: 3 });
+    expect(bench.assessment?.action).toBe('increment');
+    expect(bench.assessment?.newTm).toBe(193.5 + 5);
+  });
+
+  it('confirmCycle applies TMs, increments cycle, resets week to 1 and daysDone', async () => {
+    const d = freshDb();
+    await completeSetup({ week: 1, daysDoneIds: [], database: d });
+    await confirmCycle(
+      [
+        { liftId: 'bench', newTm: 200, missStreak: 0 },
+        { liftId: 'ohp', newTm: 110, missStreak: 0 },
+      ],
+      fixedClock,
+      d,
+    );
+    const cs = await d.cycleState.get('singleton');
+    expect(cs?.cycle).toBe(2);
+    expect(cs?.week).toBe(1);
+    expect(cs?.daysDone).toEqual([]);
+    expect(cs?.tmHistory).toHaveLength(2);
+    const bench = await d.mainLifts.get('bench');
+    expect(bench?.tm).toBe(200);
   });
 });

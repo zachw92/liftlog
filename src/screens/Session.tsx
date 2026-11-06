@@ -5,6 +5,7 @@ import {
   undoSet,
   setFeel,
   finishSession,
+  editFinishedSession,
   type SessionView,
   type PlannedRow,
   type FinishSummary,
@@ -160,6 +161,19 @@ export function SessionScreen({ sessionId, navigate }: Props) {
     }
   };
 
+  const onSaveEdits = async () => {
+    setBusy(true);
+    try {
+      await editFinishedSession(sessionId);
+      navigate({ kind: 'history' });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const isFinished = view.session.status === 'finished';
   const mainLift = view.block.mainLift;
 
   return (
@@ -254,14 +268,25 @@ export function SessionScreen({ sessionId, navigate }: Props) {
 
       <div className="fixed left-0 right-0 bottom-0 p-4 bg-bg/95 backdrop-blur border-t border-line">
         <div className="max-w-md mx-auto">
-          <button
-            type="button"
-            onClick={onFinish}
-            disabled={busy}
-            className="w-full h-14 rounded-xl bg-accent text-bg font-semibold disabled:opacity-50"
-          >
-            {busy ? 'Finishing…' : 'Finish'}
-          </button>
+          {isFinished ? (
+            <button
+              type="button"
+              onClick={onSaveEdits}
+              disabled={busy}
+              className="w-full h-14 rounded-xl bg-accent text-bg font-semibold disabled:opacity-50"
+            >
+              {busy ? 'Saving…' : 'Save edits & replay engine'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onFinish}
+              disabled={busy}
+              className="w-full h-14 rounded-xl bg-accent text-bg font-semibold disabled:opacity-50"
+            >
+              {busy ? 'Finishing…' : 'Finish'}
+            </button>
+          )}
         </div>
       </div>
 

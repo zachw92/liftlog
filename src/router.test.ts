@@ -12,6 +12,7 @@ describe('parseHash', () => {
     expect(parseHash('#setup')).toEqual({ kind: 'setup' });
     expect(parseHash('#history')).toEqual({ kind: 'history' });
     expect(parseHash('#settings')).toEqual({ kind: 'settings' });
+    expect(parseHash('#cycle-complete')).toEqual({ kind: 'cycle-complete' });
   });
 
   it('parses session routes and decodes the id', () => {
@@ -31,6 +32,7 @@ describe('toHash round-trip', () => {
       { kind: 'setup' },
       { kind: 'history' },
       { kind: 'settings' },
+      { kind: 'cycle-complete' },
       { kind: 'session', id: 'uuid-xyz' },
       { kind: 'session', id: 'slash/id' },
     ] as const;
