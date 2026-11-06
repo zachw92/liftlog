@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.vite/
+
+# Vitest / coverage
+coverage/
+*.lcov
+
+# Editor / OS / tooling
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.claude/settings.local.json
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local backups (lifting data exports should never be committed)
+backup-*.json
